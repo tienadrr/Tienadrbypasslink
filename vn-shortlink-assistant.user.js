@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         VN Shortlink Assistant — Manual Bypass
 // @namespace    https://github.com/yourname/vn-shortlink-assistant
+// @version      6.0.0
 // @updateURL    https://raw.githubusercontent.com/tienadrr/Tienadrbypasslink/main/vn-shortlink-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/tienadrr/Tienadrbypasslink/main/vn-shortlink-assistant.user.js
-// @version      6.0.0
 // @description  Trợ lý phân tích shortlink thủ công, không tự chuyển hướng; menu gộp Bypass + Link đích, xem trước hiệu ứng.
 // @author       You
 // @match        *://*/*
