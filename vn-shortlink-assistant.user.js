@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VN Shortlink Assistant — Manual Bypass
 // @namespace    https://github.com/tienadrr/Tienadrbypasslink
-// @version      6.1.0
+// @version      6.2.0
 // @updateURL    https://raw.githubusercontent.com/tienadrr/Tienadrbypasslink/main/vn-shortlink-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/tienadrr/Tienadrbypasslink/main/vn-shortlink-assistant.user.js
 // @description  Trợ lý phân tích shortlink thủ công, không tự chuyển hướng; menu gộp Bypass + Link đích, xem trước hiệu ứng.
@@ -20,7 +20,7 @@
     'use strict';
 
     const APP = 'vn-shortlink-assistant';
-    const VERSION = '6.1.0';
+    const VERSION = '6.2.0';
     const STORE = `${APP}:settings`;
 
     const DEFAULTS = {
@@ -62,6 +62,16 @@
         { id: 'lentop', label: 'LenTop', tokens: ['lentop'] },
         { id: 'linkfree', label: 'LinkFree (MediaFire wrapper)', tokens: ['linkfree'], type: 'mediafire-wrapper' },
         { id: 'tapvietcode', label: 'TapVietCode', tokens: ['tapvietcode'] }
+    ];
+
+    const BLOCK_HOSTS = [
+        'github.com', 'raw.githubusercontent.com', 'gist.github.com',
+        'googleapis.com', 'gstatic.com', 'googletagmanager.com', 'google-analytics.com',
+        'cloudflare.com', 'cdnjs.cloudflare.com', 'jsdelivr.net', 'unpkg.com',
+        'bootstrapcdn.com', 'fontawesome.com', 'jquery.com',
+        'facebook.com', 'twitter.com', 'x.com', 'youtube.com', 'youtu.be',
+        't.me', 'telegram.me', 'telegram.org',
+        'doubleclick.net', 'googlesyndication.com'
     ];
 
     const state = {
@@ -167,13 +177,26 @@
         return false;
     }
 
+    function isBlockedHost(url) {
+        try {
+            const host = new URL(url).hostname.toLowerCase();
+            return BLOCK_HOSTS.some(b => host === b || host.endsWith('.' + b));
+        } catch { return true; }
+    }
+
+    function isStaticAsset(url) {
+        if (/mediafire|drive\.google|mega\.nz|dropbox|fshare/i.test(url)) return false;
+        return /\.(js|css|json|ico|png|jpe?g|gif|svg|woff2?|ttf|map|xml|txt)(\?|$|#)/i.test(url);
+    }
+
     function scoreUrl(url) {
         const u = String(url || '').toLowerCase();
         if (isTelegramOrAd(url)) return -1000;
-        if (/mediafire\.com|drive\.google\.com|mega\.nz|dropbox\.com|fshare\.vn|onedrive\.live\.com|1drv\.ms/.test(u)) return 1000;
+        if (/github\.com|raw\.githubusercontent\.com|gist\.github\.com/i.test(u)) return -1000;
+        if (/mediafire\.com|drive\.google\.com|mega\.nz|dropbox\.com|fshare\.vn|onedrive\.live\.com|1drv\.ms/i.test(u)) return 1000;
         if (/\.(zip|rar|7z|apk|exe|dmg|iso)(\?|$|#)/i.test(u)) return 800;
         if (/\/file\/|download|mirror/i.test(u)) return 500;
-        if (/tapvietcode|link4sub|sitetop|lentop|linkfree/.test(u)) return -500;
+        if (/tapvietcode|link4sub|sitetop|lentop|linkfree/i.test(u)) return -500;
         return 0;
     }
 
@@ -189,64 +212,87 @@
     function collectCandidates() {
         const found = new Map();
 
-        const add = (raw, source) => {
+        const add = (raw, source, priority = 0) => {
             const url = decodeCandidate(raw);
             if (!url || url === location.href) return;
+            if (isBlockedHost(url)) return;
             if (isTelegramOrAd(url)) return;
+            if (isStaticAsset(url)) return;
+
             try {
                 const parsed = new URL(url);
-                if (parsed.hostname === location.hostname && parsed.pathname === location.pathname) return;
+                if (parsed.hostname === location.hostname) return;
             } catch { return; }
-            if (!found.has(url)) found.set(url, { url, source });
+
+            if (!found.has(url)) {
+                found.set(url, { url, source, priority });
+            } else {
+                const e = found.get(url);
+                if (priority > e.priority) {
+                    e.priority = priority;
+                    e.source = source;
+                }
+            }
         };
 
-        // 1. Meta tags — nơi linkfree.click / MediaFire wrapper giấu link thật
+        // ── BƯỚC 1: Meta tags (ưu tiên tuyệt đối) ──
         const metaSelectors = [
-            'meta[property="og:url"]',
-            'meta[name="twitter:url"]',
-            'meta[itemprop="url"]',
-            'meta[property="og:see_also"]',
-            'link[rel="canonical"]'
+            ['meta[property="og:url"]', 100],
+            ['meta[name="twitter:url"]', 95],
+            ['meta[property="og:see_also"]', 90],
+            ['meta[itemprop="url"]', 85],
+            ['link[rel="canonical"]', 80]
         ];
-        metaSelectors.forEach(sel => {
+
+        let metaFound = false;
+        for (const [sel, pri] of metaSelectors) {
             document.querySelectorAll(sel).forEach(meta => {
                 const val = meta.getAttribute('content') || meta.getAttribute('href');
-                if (val) add(val, `Meta ${sel}`);
+                if (val) {
+                    const before = found.size;
+                    add(val, `Meta ${sel}`, pri);
+                    if (found.size > before) metaFound = true;
+                }
             });
-        });
+        }
 
-        // 2. Thẻ <a> và data-*
+        if (metaFound) {
+            return [...found.values()]
+                .sort((a, b) => b.priority - a.priority)
+                .slice(0, 5);
+        }
+
+        // ── BƯỚC 2: Anchors ──
         document.querySelectorAll('a[href], area[href]').forEach(a => {
-            add(a.getAttribute('href'), 'Liên kết trên trang');
+            add(a.getAttribute('href'), 'Liên kết trên trang', 50);
             ['data-url', 'data-href', 'data-target', 'data-link', 'data-redirect', 'data-destination'].forEach(attr => {
-                if (a.hasAttribute(attr)) add(a.getAttribute(attr), `Thuộc tính ${attr}`);
+                if (a.hasAttribute(attr)) add(a.getAttribute(attr), `Thuộc tính ${attr}`, 50);
             });
         });
 
-        // 3. Input hidden + phần tử mang data-*
+        // ── BƯỚC 3: Hidden inputs / data-* ──
         document.querySelectorAll('input[type="hidden"], [data-url], [data-href], [data-target], [data-link], [data-redirect], [data-destination]').forEach(el => {
             ['value', 'data-url', 'data-href', 'data-target', 'data-link', 'data-redirect', 'data-destination'].forEach(attr => {
                 const val = attr === 'value' ? el.value : el.getAttribute(attr);
-                if (val) add(val, `Dữ liệu ${attr}`);
+                if (val) add(val, `Dữ liệu ${attr}`, 40);
             });
         });
 
-        // 4. Quét HTML thô
+        // ── BƯỚC 4: Raw HTML scan (dễ false positive nhất) ──
         const text = document.documentElement?.innerHTML || '';
         const patterns = [
             /(?:url|target|destination|redirect|dest|link)\s*[:=]\s*["'](https?:\/\/[^"'<> ]+)["']/gi,
             /https?:\\?\/\\?\/[a-z0-9.-]+\.[a-z]{2,}(?:\/[^\s"'<>\\]*)?/gi
         ];
         patterns.forEach(pattern => {
-            let match, count = 0;
-            while ((match = pattern.exec(text)) && count++ < 80) {
-                add(match[1] || match[0].replace(/\\\//g, '/'), 'Dữ liệu nhúng trong trang');
+            let m, count = 0;
+            while ((m = pattern.exec(text)) && count++ < 80) {
+                add(m[1] || m[0].replace(/\\\//g, '/'), 'Dữ liệu nhúng trong trang', 20);
             }
         });
 
-        // 5. Sort theo điểm ưu tiên
         const arr = [...found.values()];
-        arr.sort((a, b) => scoreUrl(b.url) - scoreUrl(a.url));
+        arr.sort((a, b) => (b.priority * 10 + scoreUrl(b.url)) - (a.priority * 10 + scoreUrl(a.url)));
         return arr.slice(0, 60);
     }
 
@@ -267,7 +313,7 @@
         log('Đang quét các URL có thể là link đích…');
         try {
             state.candidates = collectCandidates();
-            const preferred = state.candidates.find(x => !isSameOrigin(x.url)) || state.candidates[0];
+            const preferred = state.candidates[0];
             if (preferred) {
                 state.destination = preferred.url;
                 state.settings.destination = preferred.url;
@@ -287,11 +333,9 @@
         if (state.busy) return;
         state.busy = true;
         log('Đang chạy bypass thông minh…');
-
         try {
             const candidates = collectCandidates();
             state.candidates = candidates;
-
             if (candidates.length === 0) {
                 log('Không tìm thấy link nào.', 'error');
                 toast('Không tìm thấy link đích');
@@ -299,19 +343,16 @@
                 render();
                 return;
             }
-
             const best = candidates[0];
             state.destination = best.url;
             state.settings.destination = best.url;
             saveSettings();
-
             log(`Đã chọn link tốt nhất: ${best.url} (${best.source})`);
             toast('Đã tìm thấy link đích!');
         } catch (e) {
             log(`Bypass lỗi: ${e.message}`, 'error');
             toast('Bypass gặp lỗi');
         }
-
         state.busy = false;
         render();
     }
